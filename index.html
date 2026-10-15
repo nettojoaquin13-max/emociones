@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emociones de mi perro</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;padding:16px;text-align:center;background:#fafafa;color:#222}
+  input,button{font-size:16px;padding:10px;margin:6px 0;width:100%;max-width:340px;box-sizing:border-box}
+  button{border:0;border-radius:8px;background:#2563eb;color:#fff}
+  #cam{margin:12px auto}
+  #emocion{font-size:28px;font-weight:600;margin:8px 0}
+  #estado{color:#666;font-size:14px}
+</style>
+</head>
+<body>
+<h2>🐶 Emociones de mi perro</h2>
+
+<input id="url" placeholder="Link del modelo de Teachable Machine">
+<button id="btnIniciar">1. Iniciar cámara y modelo</button>
+<button id="btnBT">2. Conectar micro:bit (Bluetooth)</button>
+
+<div id="cam"></div>
+<div id="emocion">—</div>
+<div id="estado">Esperando…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js"></script>
+<script>
+const UART = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX   = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // escritura hacia la micro:bit
+const UMBRAL = 0.80;      // confianza mínima para aceptar una emoción
+const ESTABLE_MS = 1000;  // la emoción debe mantenerse este tiempo
+
+let modelo, webcam, rxChar = null;
+let ultimaEnviada = "", candidata = "", desde = 0;
+const $ = id => document.getElementById(id);
+
+$("btnIniciar").onclick = async () => {
+  let url = $("url").value.trim();
+  if (!url) return alert("Pega el link del modelo.");
+  if (!url.endsWith("/")) url += "/";
+  $("estado").textContent = "Cargando modelo…";
+  try {
+    modelo = await tmImage.load(url + "model.json", url + "metadata.json");
+    webcam = new tmImage.Webcam(300, 300, false);
+    await webcam.setup({ facingMode: "environment" }); // cámara trasera
+    await webcam.play();
+    $("cam").appendChild(webcam.canvas);
+    $("estado").textContent = "Modelo listo";
+    requestAnimationFrame(bucle);
+  } catch (e) {
+    $("estado").textContent = "Error: " + e.message;
+  }
+};
+
+$("btnBT").onclick = async () => {
+  if (!navigator.bluetooth) {
+    return alert("Este navegador no soporta Web Bluetooth. En iPhone usa la app Bluefy.");
+  }
+  try {
+    const dispositivo = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "BBC micro:bit" }],
+      optionalServices: [UART]
+    });
+    const servidor = await dispositivo.gatt.connect();
+    const servicio = await servidor.getPrimaryService(UART);
+    rxChar = await servicio.getCharacteristic(RX);
+    $("estado").textContent = "micro:bit conectada ✔";
+    dispositivo.addEventListener("gattserverdisconnected", () => {
+      rxChar = null;
+      $("estado").textContent = "micro:bit desconectada";
+    });
+  } catch (e) {
+    $("estado").textContent = "Bluetooth: " + e.message;
+  }
+};
+
+async function bucle() {
+  webcam.update();
+  const preds = await modelo.predict(webcam.canvas);
+  const mejor = preds.reduce((a, b) => (a.probability > b.probability ? a : b));
+  const ahora = performance.now();
+
+  if (mejor.probability >= UMBRAL) {
+    $("emocion").textContent = mejor.className + " (" + Math.round(mejor.probability * 100) + "%)";
+    if (mejor.className !== candidata) { candidata = mejor.className; desde = ahora; }
+    if (ahora - desde >= ESTABLE_MS && candidata !== ultimaEnviada) {
+      enviar(candidata);
+      ultimaEnviada = candidata;
+    }
+  } else {
+    candidata = "";
+  }
+  requestAnimationFrame(bucle);
+}
+
+async function enviar(texto) {
+  if (!rxChar) return;
+  try {
+    await rxChar.writeValueWithoutResponse(new TextEncoder().encode(texto + "\n"));
+  } catch (e) {
+    $("estado").textContent = "No se pudo enviar: " + e.message;
+  }
+}
+</script>
+</body>
+</html>
